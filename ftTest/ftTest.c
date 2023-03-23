@@ -46,6 +46,8 @@
 #define fttToolVisibleTicks 30000
 #define fttTimerId           1234
 #define fttTimerRate          999
+
+#define TipTextLimit    4096  // This limit is for the test program, the library doesn't care
 // ------------------------------------------------------------------------
 
 static struct MyGlobal_s
@@ -55,11 +57,113 @@ static struct MyGlobal_s
    HANDLE      hTip;
    BOOL        bTrackingHover;
    DWORD       dwToolTick;
+   char        szTipText[TipTextLimit];
 } g;
 
 // -------------------------------------------------------------------------
+// -------------------------------------------------------------------------
 
-void test_TrackMouseHover( BOOL bTrack )
+static BOOL edit_OnInitDialog( HWND hwnd, HWND hwndFocus, LPARAM lParam )
+{
+   HWND  hwndParent;
+   RECT  rChild, rParent, rScreen;
+   int   wChild, hChild, wParent, hParent;
+   int   xNew, yNew;
+   int   xPercent = 50;
+   int   yPercent = 50;
+
+   hwndParent = GetParent( hwnd );
+   // Get the Height and Width of the child window
+   GetWindowRect( hwnd, &rChild );
+   wChild = rChild.right - rChild.left;
+   hChild = rChild.bottom - rChild.top;
+
+   // Get the Height and Width of the parent window
+   if( !IsWindow(hwndParent) || IsIconic( hwndParent ) )
+   {
+      GetWindowRect( GetDesktopWindow(), &rParent );
+   }
+   else
+   {
+      GetWindowRect( hwndParent, &rParent );
+   }
+   wParent = rParent.right - rParent.left;
+   hParent = rParent.bottom - rParent.top;
+
+   // Get the display limits
+   rScreen.left   = 0;
+   rScreen.top    = 0;
+   rScreen.right  = GetSystemMetrics( SM_CXSCREEN );
+   rScreen.bottom = GetSystemMetrics( SM_CYSCREEN );
+
+   // Calculate new X position, then adjust for screen
+   xNew = rParent.left + (((wParent * xPercent) - (wChild * 50)) / 100);
+   if( xNew < rScreen.left )
+   {
+      xNew = rScreen.left;
+   }
+   else if( rScreen.right < (xNew+wChild) )
+   {
+      xNew = rScreen.right - wChild;
+   }
+
+   // Calculate new Y position, then adjust for screen
+   yNew = rParent.top + (((hParent * yPercent) - (hChild * 50)) / 100);
+   if( yNew < rScreen.top )
+   {
+      yNew = rScreen.top;
+   }
+   else if( rScreen.bottom < (yNew+hChild))
+   {
+      yNew = rScreen.bottom - hChild;
+   }
+
+   SetWindowPos( hwnd, NULL,
+                 xNew, yNew, 0, 0, SWP_NOSIZE | SWP_NOZORDER );
+
+   SetDlgItemText( hwnd, Tbx_TipText, g.szTipText );
+   return TRUE;
+}
+
+// -------------------------------------------------------------------------
+
+static void edit_OnCommand( HWND hwnd, int id, HWND hwndCtl, UINT codeNotify )
+{
+   char  szTemp[TipTextLimit];
+
+   switch( id )
+   {
+   case IDOK :
+      if( GetDlgItemText( hwnd, Tbx_TipText, szTemp, sizeof(szTemp) ) )
+      {
+         strcpy_s( g.szTipText, sizeof(g.szTipText), szTemp );
+         EndDialog( hwnd, IDOK );
+      }
+      break;
+
+   case IDCANCEL:
+      EndDialog( hwnd, IDCANCEL );
+      break;
+   }
+   return;
+}
+
+// -------------------------------------------------------------------------
+
+static LRESULT CALLBACK edit_DlgProc( HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam )
+{
+   switch( uMsg )
+   {
+   HANDLE_MSG( hwnd, WM_INITDIALOG, edit_OnInitDialog );
+   HANDLE_MSG( hwnd, WM_COMMAND,    edit_OnCommand    );
+   }
+   return FALSE;
+}
+
+// -------------------------------------------------------------------------
+// -------------------------------------------------------------------------
+
+static void test_TrackMouseHover( BOOL bTrack )
 {
    TRACKMOUSEEVENT   tme = { .cbSize = sizeof(tme) };
 
@@ -77,7 +181,7 @@ void test_TrackMouseHover( BOOL bTrack )
 
 // -------------------------------------------------------------------------
 
-void test_HideToolTip( void )
+static void test_HideToolTip( void )
 {
    ft_HideFancyTip( g.hTip );
    g.dwToolTick = 0;
@@ -86,7 +190,7 @@ void test_HideToolTip( void )
 
 // -------------------------------------------------------------------------
 
-void test_ShowToolTip( HWND hwnd, int x, int y )
+static void test_ShowToolTip( HWND hwnd, int x, int y )
 {
    POINT p = { .x = x, .y = y };
 
@@ -170,11 +274,11 @@ static BOOL test_OnCreate( HWND hwnd, LPCREATESTRUCT lpCreateStruct )
    ft_AddFancyTipFont( g.hTip, "Value", &lf );
 
    ft_SetFancyTipMargin( g.hTip, 12, 12 );
-   ft_SetFancyTipText( g.hTip,
-                       "<title>This line uses the 'title' font</ff>\n"
-                       "<a:right>Here's the 'body' font</a>\n"
-                       "<r@:2/5>A Value = </r@><value><fg:#fff><bg:#00A> 1.23E+02 </bg></fg></value>", NULL,
-                       ftiInformation );
+   sprintf_s( g.szTipText, sizeof(g.szTipText),
+              "<title>This line uses the 'title' font</ff>\n"
+              "<a:right>Here's the 'body' font</a>\n"
+              "<r@:2/5>A Value = </r@><value><fg:#fff><bg:#00A> 1.23E+02 </bg></fg></value>" );
+   ft_SetFancyTipText( g.hTip, g.szTipText, NULL, ftiInformation );
    SetTimer( hwnd, fttTimerId, fttTimerRate, NULL );
    return TRUE;
 }
@@ -198,6 +302,13 @@ static void test_OnCommand( HWND hwnd, int id, HWND hwndCtl, UINT codeNotify )
                   "Test program for the FancyTips DLL",
                   "About FancyTip Test Driver",
                   MB_OK|MB_ICONINFORMATION );
+      break;
+
+   case ID_TIPTEXT:
+      if( IDOK == DialogBox( g.hinst, MAKEINTRESOURCE(Dlg_MsgEdit), hwnd, edit_DlgProc ) )
+      {  // Update the TipText...
+         ft_SetFancyTipText( g.hTip, g.szTipText, NULL, ftiInformation );
+      }
       break;
 
    default:
