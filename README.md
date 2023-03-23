@@ -23,11 +23,11 @@ I had two (self-imposed) primary requirements:
 
 ### Examples
 
-![Sample 1](https://github.com/nurbles/FancyTips/images/ftSample1.png "Sample 1")
+![Sample 1](https://github.com/nurbles/FancyTips/blob/main/images/ftSample1.png "Sample 1")
 
-![Sample 2](https://github.com/nurbles/FancyTips/images/ftSample2.png "Sample 2")
+![Sample 2](https://github.com/nurbles/FancyTips/blob/main/images/ftSample2.png "Sample 2")
 
-![Sample 3](https://github.com/nurbles/FancyTips/images/ftSample3.png "Sample 3")
+![Sample 3](https://github.com/nurbles/FancyTips/blob/main/images/ftSample3.png "Sample 3")
 
 
 ### For Text Formatting
