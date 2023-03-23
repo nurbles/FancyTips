@@ -29,6 +29,14 @@ I had two (self-imposed) primary requirements:
 
 ![Sample 3](https://github.com/nurbles/FancyTips/blob/main/images/ftSample3.png "Sample 3")
 
+#### Sample notes:
+
+1. The bold title lines are part of the formatting instead
+of using the separate title and body strings that the system tooltip
+control use.
+2. The icon images used were created using my limited skills with
+graphic tools. Icons may also be loaded by name from the customer
+application instance.
 
 ### For Text Formatting
 This package takes a specially encoded string and renders it into tooltip
@@ -36,7 +44,7 @@ This package takes a specially encoded string and renders it into tooltip
 
 The string encoding was inspired by html, and supports:
 
-`<ff:name></ff>`    For use registered font named 'name'
+`<ff:name></ff>` To use the registered font named 'name'
 
 Font names may also be used as tags without the leading `ff:`,
 if desired.  Any closing font tag will be accepted to stop
@@ -56,11 +64,11 @@ using the currently selected font.
 
 `<d@:#>` Decimal Align text, with decimal in column # |
 
-`#` may be a specific column (determined using the current font's average character width)
-or a fraction (i.e. `<r@:2/5>`) to a fraction of the current total width
-or `^` for the current center point (based on the current total width)
-or `*` to re-use the most recently computed @ value (useful in case variable
-text may increase the width)
+`#` may be a specific column (determined using the _current_ font's average 
+character width) or a fraction (i.e. `<r@:2/5>`) to a fraction of the 
+current total width or `^` for the current center point (based on the 
+current total width) or `*` to re-use the most recently computed @ value 
+(useful in case variable text may increase the width)
 
 `<ne>` No tags or escapes between this symbol and its end `</ne>`
 
@@ -68,12 +76,13 @@ This means that NONE of the html-like or escaped
 character symbols will be interpreted (except for
 the end of 'no escapes' sequence.)
 
-To terminate an effect, use \</xx\> where `xx` is the symbol being ended.
+To terminate an effect, use `</xx>` where `xx` is the symbol being ended.
 These controls may be nested, but may not overlap.  That means that
 termination symbols MUST appear in the opposite sequence from where
 the symbols were started!
 
-`<sc:#>` Set start column to column # (using DEFAULT font's tmAveCharWidth)
+`<sc:#>` Set start column to column # (using _default_ font's average 
+character width)
 
 NOTE: `<sc:#>` does not allow a terminating symbol
 
