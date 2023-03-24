@@ -810,6 +810,7 @@ static int _GetFancyCtrlType( FancyData *pfd, FancyControl *pfc, char **sz )
          if( '>' == *cp )
          {  // There's no value present
             bDefaultValue = TRUE;
+            szVal[0] = '\0';
             continue;
          }
          break;
@@ -1685,354 +1686,352 @@ FT_DECLSPEC int ft_SetFancyTipText( HANDLE hTip, char *sz, SIZE *ps, void *pIcon
    BOOL           bNeedSize = TRUE;
 
    pfd = (FancyData *)hTip;
-   if( NULL != pfd )
+   if( (NULL == pfd) || !IsWindow(pfd->hTip) || (NULL == sz) )
+   {  // bad parameter or window has been destroyed
+      dbg_printf( "FancyTips:  bad param in " __FUNCTION__ "\n" );
+      return ERROR_INVALID_PARAMETER;
+   }
+
+   hinst    = pfd->hinst;
+   sIcon.cx = pfd->sIcon.cx;
+   sIcon.cy = pfd->sIcon.cy;
+
+   pfd->bTipReady = FALSE;
+   pfd->iAtPrev   = pfd->xMarg;  // Make sensible in case of foolishness
+
+   switch( (DWORD_PTR)pIcon )
    {
-      hinst    = pfd->hinst;
-      sIcon.cx = pfd->sIcon.cx;
-      sIcon.cy = pfd->sIcon.cy;
+   case 0:  // i.e. NULL, so no icon
+      bIcon = FALSE;
+      break;
 
-      if( (NULL == pfd) || !IsWindow(pfd->hTip) || (NULL == sz) )
-      {  // bad parameter or window has been destroyed
-         dbg_printf( "FancyTips:  bad param in " __FUNCTION__ "\n" );
-         return ERROR_INVALID_PARAMETER;
-      }
-      pfd->bTipReady = FALSE;
-      pfd->iAtPrev   = pfd->xMarg;  // Make sensible in case of foolishness
+   case ftiInformation: pIcon = (void *)(DWORD_PTR)Ico_BlueInfo;     hinst = ghDLL; bNeedSize = FALSE; goto LoadIconResource;// 0x0100
+   case ftiQuestion   : pIcon = (void *)(DWORD_PTR)Ico_GrayQuestion; hinst = ghDLL; bNeedSize = FALSE; goto LoadIconResource;// 0x0101
+   case ftiAlertAlarm : pIcon = (void *)(DWORD_PTR)Ico_YellowAlert;  hinst = ghDLL; bNeedSize = FALSE; goto LoadIconResource;// 0x0102
+   case ftiHighAlarm  : pIcon = (void *)(DWORD_PTR)Ico_RedHigh;      hinst = ghDLL; bNeedSize = FALSE; goto LoadIconResource;// 0x0103
 
-      switch( (DWORD_PTR)pIcon )
-      {
-      case 0:  // i.e. NULL, so no icon
-         bIcon = FALSE;
-         break;
-
-      case ftiInformation: pIcon = (void *)(DWORD_PTR)Ico_BlueInfo;     hinst = ghDLL; bNeedSize = FALSE; goto LoadIconResource;// 0x0100
-      case ftiQuestion   : pIcon = (void *)(DWORD_PTR)Ico_GrayQuestion; hinst = ghDLL; bNeedSize = FALSE; goto LoadIconResource;// 0x0101
-      case ftiAlertAlarm : pIcon = (void *)(DWORD_PTR)Ico_YellowAlert;  hinst = ghDLL; bNeedSize = FALSE; goto LoadIconResource;// 0x0102
-      case ftiHighAlarm  : pIcon = (void *)(DWORD_PTR)Ico_RedHigh;      hinst = ghDLL; bNeedSize = FALSE; goto LoadIconResource;// 0x0103
-
-      case IDI_APPLICATION:   // System message icon
-      case IDI_HAND       :
-      case IDI_QUESTION   :
-      case IDI_EXCLAMATION:
-      case IDI_ASTERISK   :
-      case IDI_WINLOGO    :
-      case IDI_SHIELD     :
-         hinst = NULL;
+   case IDI_APPLICATION:   // System message icon
+   case IDI_HAND       :
+   case IDI_QUESTION   :
+   case IDI_EXCLAMATION:
+   case IDI_ASTERISK   :
+   case IDI_WINLOGO    :
+   case IDI_SHIELD     :
+      hinst = NULL;
 LoadIconResource:
-         hIcon = LoadIcon( hinst, MAKEINTRESOURCE((DWORD_PTR)pIcon) );
+      hIcon = LoadIcon( hinst, MAKEINTRESOURCE((DWORD_PTR)pIcon) );
+      bIcon = (NULL != hIcon);
+      if( bNeedSize )
+      {
+         _GetIconSize( hIcon, &sIcon );
+      }
+      break;
+
+   default: // Custom icon
+      if( IS_INTRESOURCE((DWORD_PTR)pIcon) )
+      {
+         if( 32000 < (DWORD_PTR)pIcon )
+         {  // This is likely a system resource request
+            hIcon = LoadIcon( NULL, MAKEINTRESOURCE((DWORD_PTR)pIcon) );
+         }
+         else
+         {
+            hIcon = LoadIcon( hinst, MAKEINTRESOURCE((DWORD_PTR)pIcon) );
+         }
          bIcon = (NULL != hIcon);
          if( bNeedSize )
          {
             _GetIconSize( hIcon, &sIcon );
          }
-         break;
-
-      default: // Custom icon
-         if( IS_INTRESOURCE((DWORD_PTR)pIcon) )
+      }
+      else
+      {
+         cp = (char *)pIcon;
+         if( 0 < _FileExists( cp ) )
          {
-            if( 32000 < (DWORD_PTR)pIcon )
-            {  // This is likely a system resource request
-               hIcon = LoadIcon( NULL, MAKEINTRESOURCE((DWORD_PTR)pIcon) );
-            }
-            else
-            {
-               hIcon = LoadIcon( hinst, MAKEINTRESOURCE((DWORD_PTR)pIcon) );
-            }
+            hIcon = (HICON)LoadImage( NULL,             // hInstance must be NULL when loading from a file
+                                      cp,               // the icon file name
+                                      IMAGE_ICON,       // specifies that the file is an icon
+                                      pfd->sIcon.cx,    // width of the image
+                                      pfd->sIcon.cy,    // height of the image
+                                      LR_LOADFROMFILE|  // we want to load a file (as opposed to a resource)
+                                      //LR_DEFAULTSIZE|   // default metrics based on the type (IMAGE_ICON, 32x32)
+                                      LR_SHARED );      // let the system release the handle when it's no longer used
             bIcon = (NULL != hIcon);
-            if( bNeedSize )
-            {
-               _GetIconSize( hIcon, &sIcon );
-            }
+            _GetIconSize( hIcon, &sIcon );
          }
          else
          {
-            cp = (char *)pIcon;
-            if( 0 < _FileExists( cp ) )
-            {
-               hIcon = (HICON)LoadImage( NULL,             // hInstance must be NULL when loading from a file
-                                         cp,               // the icon file name
-                                         IMAGE_ICON,       // specifies that the file is an icon
-                                         pfd->sIcon.cx,    // width of the image
-                                         pfd->sIcon.cy,    // height of the image
-                                         LR_LOADFROMFILE|  // we want to load a file (as opposed to a resource)
-                                         //LR_DEFAULTSIZE|   // default metrics based on the type (IMAGE_ICON, 32x32)
-                                         LR_SHARED );      // let the system release the handle when it's no longer used
-               bIcon = (NULL != hIcon);
-               _GetIconSize( hIcon, &sIcon );
-            }
-            else
-            {
-               hIcon = NULL;
-               bIcon = FALSE;
-            }
+            hIcon = NULL;
+            bIcon = FALSE;
          }
-         break;
       }
+      break;
+   }
 
-      FillRect( pfd->hdc, &pfd->rBuf, pfd->hbrBg );
+   FillRect( pfd->hdc, &pfd->rBuf, pfd->hbrBg );
 
-      xMarg = pfd->xMarg;
-      if( bIcon )
+   xMarg = pfd->xMarg;
+   if( bIcon )
+   {
+      DrawIconEx( pfd->hdc, xMarg, pfd->yMarg, hIcon,
+                  sIcon.cx, sIcon.cy, 0,
+                  NULL, DI_NORMAL);
+      DeleteObject( hIcon );
+      xMarg += sIcon.cx + pfd->xMarg;
+   }
+   saveMarg = pfd->xMarg;
+   pfd->xMarg = xMarg;
+
+   pfd->p.x      = pfd->xMarg; pfd->p.y      = pfd->yMarg;
+   pfd->sMax.cx  = pfd->xMarg; pfd->sMax.cy  = pfd->yMarg;
+   pfd->sLine.cx = 0;          pfd->sLine.cy = 0;
+
+   cp = szTemp;
+   while( *sz )
+   {
+      if( ('\\' == *sz) && (FALSE == pfd->bNoEscape) )
       {
-         DrawIconEx( pfd->hdc, xMarg, pfd->yMarg, hIcon,
-                     sIcon.cx, sIcon.cy, 0,
-                     NULL, DI_NORMAL);
-         DeleteObject( hIcon );
-         xMarg += sIcon.cx + pfd->xMarg;
-      }
-      saveMarg = pfd->xMarg;
-      pfd->xMarg = xMarg;
-
-      pfd->p.x      = pfd->xMarg; pfd->p.y      = pfd->yMarg;
-      pfd->sMax.cx  = pfd->xMarg; pfd->sMax.cy  = pfd->yMarg;
-      pfd->sLine.cx = 0;          pfd->sLine.cy = 0;
-
-      cp = szTemp;
-      while( *sz )
-      {
-         if( ('\\' == *sz) && (FALSE == pfd->bNoEscape) )
-         {
-            sz++;
-            switch( *sz )
-            {
-            case '0' :  // Octal char code  \ooo
-            case '1' :  // Octal char code  \ooo
-            case '2' :  // Octal char code  \ooo
-            case '3' :  // Octal char code  \ooo
-            case '4' :  // Octal char code  \ooo
-            case '5' :  // Octal char code  \ooo
-            case '6' :  // Octal char code  \ooo
-            case '7' :  // Octal char code  \ooo
-               for( t = 0; (t < 3) && isodigit(*sz); t++ )
-               {
-                  szCode[t] = *sz;
-                  sz++;
-               }
-               szCode[t] = '\0';
-               *cp = (char)strtoul( szCode, NULL, 8 );
-               cp++;
-               len += 1;
-               continue;
-
-            case 'x' :  // Hex char code  \xXXX
-               sz++;
-               for( t = 0; (t < 3) && isxdigit(*sz); t++ )
-               {
-                  szCode[t] = *sz;
-                  sz++;
-               }
-               szCode[t] = '\0';
-               *cp = (char)strtoul( szCode, NULL, 16 );
-               cp++;
-               len += 1;
-               continue;
-
-            case 'n' :  // Newline
-               goto NewLineChar;
-
-            case 't' :  // Tab
-               goto TabChar;
-
-            default  :  // any other escaped character is itself
-               goto CopyChar;
-            }
-         }
+         sz++;
          switch( *sz )
          {
-         case '<'  : // Start of a control token
-            if( pfd->bNoEscape )
-            {  // Check for the ONLY value control sequence...
-               if( !_strnicmp( sz, "</ne>", 5 ) )
-               {  // Found it!  Reactivate checking for escapes & controls
-                  pfd->bNoEscape = FALSE;
-                  sz += 5;
-                  continue;
-               }
-            }
-            else if( pfd->cfc < MaxFancyControls )
+         case '0' :  // Octal char code  \ooo
+         case '1' :  // Octal char code  \ooo
+         case '2' :  // Octal char code  \ooo
+         case '3' :  // Octal char code  \ooo
+         case '4' :  // Octal char code  \ooo
+         case '5' :  // Octal char code  \ooo
+         case '6' :  // Octal char code  \ooo
+         case '7' :  // Octal char code  \ooo
+            for( t = 0; (t < 3) && isodigit(*sz); t++ )
             {
+               szCode[t] = *sz;
                sz++;
-               pfc = &pfd->fc[pfd->cfc];
-               rc = _GetFancyCtrlType( pfd, pfc, &sz );
-               if( rc < 0 )
+            }
+            szCode[t] = '\0';
+            *cp = (char)strtoul( szCode, NULL, 8 );
+            cp++;
+            len += 1;
+            continue;
+
+         case 'x' :  // Hex char code  \xXXX
+            sz++;
+            for( t = 0; (t < 3) && isxdigit(*sz); t++ )
+            {
+               szCode[t] = *sz;
+               sz++;
+            }
+            szCode[t] = '\0';
+            *cp = (char)strtoul( szCode, NULL, 16 );
+            cp++;
+            len += 1;
+            continue;
+
+         case 'n' :  // Newline
+            goto NewLineChar;
+
+         case 't' :  // Tab
+            goto TabChar;
+
+         default  :  // any other escaped character is itself
+            goto CopyChar;
+         }
+      }
+      switch( *sz )
+      {
+      case '<'  : // Start of a control token
+         if( pfd->bNoEscape )
+         {  // Check for the ONLY value control sequence...
+            if( !_strnicmp( sz, "</ne>", 5 ) )
+            {  // Found it!  Reactivate checking for escapes & controls
+               pfd->bNoEscape = FALSE;
+               sz += 5;
+               continue;
+            }
+         }
+         else if( pfd->cfc < MaxFancyControls )
+         {
+            sz++;
+            pfc = &pfd->fc[pfd->cfc];
+            rc = _GetFancyCtrlType( pfd, pfc, &sz );
+            if( rc < 0 )
+            {
+               dbg_printf( "FancyTips:  unknown control type\n" );
+               return rc;
+            }
+            if( IsEndSymbol( pfc->eType ) )
+            {  // Attempt to pop the previous symbol value off the 'stack'
+               if( 0 < pfd->cfc )
                {
-                  dbg_printf( "FancyTips:  unknown control type\n" );
-                  return rc;
-               }
-               if( IsEndSymbol( pfc->eType ) )
-               {  // Attempt to pop the previous symbol value off the 'stack'
-                  if( 0 < pfd->cfc )
-                  {
-                     _EmitFancyText( pfd, szTemp, len );
-                     len = 0;
-                     cp = sz;
-                     pfc->eType &= ~fcEnd;
-                     pfcPrev = &pfd->fc[pfd->cfc-1];
-                     if( pfc->eType == pfcPrev->eType )
-                     {  // OK, restore the previous value of this control setting
-                        switch( pfc->eType )
-                        {
-                        case fcNoEscape:  pfd->bNoEscape = (BOOL)pfcPrev->prev;  break;
-                        case fcFgColor:   pfd->crFg   = (COLORREF)pfcPrev->prev; break;
-                        case fcBgColor:   pfd->crBg   = (COLORREF)pfcPrev->prev; break;
-                        case fcFont:      pfd->iFont  = (int)pfcPrev->prev;      break;
-                        case fcAlign:     pfd->iAlign = (int)pfcPrev->prev;      break;
-                        case fcLeftAt:
-                        case fcCenterAt:
-                        case fcDecimalAt:
-                        case fcRightAt:   pfd->eAt = (FancyAlign)HIWORD(pfcPrev->prev);
-                                          pfd->iAt = (int)LOWORD(pfcPrev->prev); break;
-                        }
-                        pfd->cfc -= 1;
-                     }
-                     else
+                  _EmitFancyText( pfd, szTemp, len );
+                  len = 0;
+                  cp = sz;
+                  pfc->eType &= ~fcEnd;
+                  pfcPrev = &pfd->fc[pfd->cfc-1];
+                  if( pfc->eType == pfcPrev->eType )
+                  {  // OK, restore the previous value of this control setting
+                     switch( pfc->eType )
                      {
-                        switch( pfc->eType )
-                        {
-                        case fcNoEscape:  pfd->bNoEscape = FALSE; break;
-                        case fcColumn:    break;   // Not required, but OK.
-                        case fcBreak:     break;   // Not required, but OK.
-                        default:
-                           // Error!  Previous 'start' doesn't match this 'end'!
-                           dbg_printf( "FancyTips:  Previous 'start' doesn't match this 'end'!\n" );
-                           break;
-                        }
+                     case fcNoEscape:  pfd->bNoEscape = (BOOL)pfcPrev->prev;  break;
+                     case fcFgColor:   pfd->crFg   = (COLORREF)pfcPrev->prev; break;
+                     case fcBgColor:   pfd->crBg   = (COLORREF)pfcPrev->prev; break;
+                     case fcFont:      pfd->iFont  = (int)pfcPrev->prev;      break;
+                     case fcAlign:     pfd->iAlign = (int)pfcPrev->prev;      break;
+                     case fcLeftAt:
+                     case fcCenterAt:
+                     case fcDecimalAt:
+                     case fcRightAt:   pfd->eAt = (FancyAlign)HIWORD(pfcPrev->prev);
+                        pfd->iAt = (int)LOWORD(pfcPrev->prev); break;
                      }
+                     pfd->cfc -= 1;
                   }
                   else
-                  {  // Error!  No matching 'start' for ANY symbol!
-                     dbg_printf( "FancyTips:  No matching 'start' for ANY symbol!\n" );
+                  {
+                     switch( pfc->eType )
+                     {
+                     case fcNoEscape:  pfd->bNoEscape = FALSE; break;
+                     case fcColumn:    break;   // Not required, but OK.
+                     case fcBreak:     break;   // Not required, but OK.
+                     default:
+                        // Error!  Previous 'start' doesn't match this 'end'!
+                        dbg_printf( "FancyTips:  Previous 'start' doesn't match this 'end'!\n" );
+                        break;
+                     }
                   }
                }
                else
-               {
-                  do // once
-                  {
-                     _EmitFancyText( pfd, szTemp, len );
-                     len = 0;
-                     switch( pfc->eType )
-                     {
-                     case fcNoEscape:  pfd->bNoEscape = TRUE; continue;
-                     case fcFgColor:   pfc->prev = pfd->crFg  ; pfd->crFg   = (COLORREF)pfc->val;  break;
-                     case fcBgColor:   pfc->prev = pfd->crBg  ; pfd->crBg   = (COLORREF)pfc->val;  break;
-                     case fcFont:      pfc->prev = pfd->iFont ; pfd->iFont  = (int)pfc->val;       break;
-                     case fcAlign:     pfc->prev = pfd->iAlign; pfd->iAlign = (int)pfc->val;       break;
-                     case fcLeftAt:
-                        pfc->prev = MAKEDWORD( pfd->iAt, pfd->eAt );
-                        pfd->eAt  = faLeft;
-                        pfd->iAt  = (int)pfc->val;
-                        //pfd->iAt  = pfd->xMarg + (int)pfc->val;// * pfd->f[pfd->iFont].tm.tmAveCharWidth;
-                        break;
-
-                     case fcCenterAt:
-                        pfc->prev = MAKEDWORD( pfd->iAt, pfd->eAt );
-                        pfd->eAt  = faCenter;
-                        pfd->iAt  = (int)pfc->val;
-                        //pfd->iAt  = pfd->xMarg + (int)pfc->val;// * pfd->f[pfd->iFont].tm.tmAveCharWidth;
-                        break;
-
-                     case fcRightAt:
-                        pfc->prev = MAKEDWORD( pfd->iAt, pfd->eAt );
-                        pfd->eAt  = faRight;
-                        pfd->iAt  = (int)pfc->val;
-                        //pfd->iAt  = pfd->xMarg + (int)pfc->val;// * pfd->f[pfd->iFont].tm.tmAveCharWidth;
-                        break;
-
-                     case fcDecimalAt:
-                        pfc->prev = MAKEDWORD( pfd->iAt, pfd->eAt );
-                        pfd->eAt  = faDecimal;
-                        pfd->iAt  = (int)pfc->val;
-                        //pfd->iAt  = pfd->xMarg + (int)pfc->val;// * pfd->f[pfd->iFont].tm.tmAveCharWidth;
-                        break;
-
-                     case fcColumn:
-                        pfd->p.x  = pfd->xMarg + (int)pfc->val * pfd->f[0].tm.tmAveCharWidth;
-                        continue;
-
-                     case fcBreak:
-                        goto ResetLine;
-                     }
-                     pfd->cfc += 1;
-                  }while(FALSE);
+               {  // Error!  No matching 'start' for ANY symbol!
+                  dbg_printf( "FancyTips:  No matching 'start' for ANY symbol!\n" );
                }
-               cp = szTemp;
-               continue;
             }
             else
             {
-               dbg_printf( "FancyTips:  Too many nested format controls!  (Limit = %d)\n", MaxFancyControls );
-            }
-            break;   // Escaped '<', so process like a normal character
-
-         case '\n' : // End of line, time to emit what we have and start a new line
-NewLineChar:
-            sz++;
-            _EmitFancyText( pfd, szTemp, len );
-ResetLine:
-            pfd->sMax.cy += pfd->sLine.cy;
-            pfd->sMax.cx  = max( pfd->sMax.cx, pfd->p.x );
-            pfd->p.x      = pfd->xMarg;
-            pfd->p.y     += pfd->sLine.cy;
-            pfd->sLine.cx = 0;
-            pfd->sLine.cy = 0;
-            cp = szTemp;
-            len = 0;
-            continue;
-
-         case '\t' : // Advance the output location to the next tab stop for this font
-TabChar:
-            sz++;
-            _EmitFancyText( pfd, szTemp, len );
-            cp = szTemp;
-            len = 0;
-            for( t = 0; t < pfd->f[pfd->iFont].ctab; t++ )
-            {
-               tab = pfd->xMarg + pfd->f[pfd->iFont].tab[t];
-               if( pfd->p.x < tab )
+               do // once
                {
-                  pfd->p.x = tab;
-                  break;
-               }
+                  _EmitFancyText( pfd, szTemp, len );
+                  len = 0;
+                  switch( pfc->eType )
+                  {
+                  case fcNoEscape:  pfd->bNoEscape = TRUE; continue;
+                  case fcFgColor:   pfc->prev = pfd->crFg  ; pfd->crFg   = (COLORREF)pfc->val;  break;
+                  case fcBgColor:   pfc->prev = pfd->crBg  ; pfd->crBg   = (COLORREF)pfc->val;  break;
+                  case fcFont:      pfc->prev = pfd->iFont ; pfd->iFont  = (int)pfc->val;       break;
+                  case fcAlign:     pfc->prev = pfd->iAlign; pfd->iAlign = (int)pfc->val;       break;
+                  case fcLeftAt:
+                     pfc->prev = MAKEDWORD( pfd->iAt, pfd->eAt );
+                     pfd->eAt  = faLeft;
+                     pfd->iAt  = (int)pfc->val;
+                     //pfd->iAt  = pfd->xMarg + (int)pfc->val;// * pfd->f[pfd->iFont].tm.tmAveCharWidth;
+                     break;
+
+                  case fcCenterAt:
+                     pfc->prev = MAKEDWORD( pfd->iAt, pfd->eAt );
+                     pfd->eAt  = faCenter;
+                     pfd->iAt  = (int)pfc->val;
+                     //pfd->iAt  = pfd->xMarg + (int)pfc->val;// * pfd->f[pfd->iFont].tm.tmAveCharWidth;
+                     break;
+
+                  case fcRightAt:
+                     pfc->prev = MAKEDWORD( pfd->iAt, pfd->eAt );
+                     pfd->eAt  = faRight;
+                     pfd->iAt  = (int)pfc->val;
+                     //pfd->iAt  = pfd->xMarg + (int)pfc->val;// * pfd->f[pfd->iFont].tm.tmAveCharWidth;
+                     break;
+
+                  case fcDecimalAt:
+                     pfc->prev = MAKEDWORD( pfd->iAt, pfd->eAt );
+                     pfd->eAt  = faDecimal;
+                     pfd->iAt  = (int)pfc->val;
+                     //pfd->iAt  = pfd->xMarg + (int)pfc->val;// * pfd->f[pfd->iFont].tm.tmAveCharWidth;
+                     break;
+
+                  case fcColumn:
+                     pfd->p.x  = pfd->xMarg + (int)pfc->val * pfd->f[0].tm.tmAveCharWidth;
+                     continue;
+
+                  case fcBreak:
+                     goto ResetLine;
+                  }
+                  pfd->cfc += 1;
+               }while(FALSE);
             }
-            pfd->sMax.cx = max( pfd->sMax.cx, pfd->p.x );
+            cp = szTemp;
             continue;
          }
-CopyChar:
-         len += 1;
-         *cp = *sz;
-         cp++;
+         else
+         {
+            dbg_printf( "FancyTips:  Too many nested format controls!  (Limit = %d)\n", MaxFancyControls );
+         }
+         break;   // Escaped '<', so process like a normal character
+
+      case '\n' : // End of line, time to emit what we have and start a new line
+NewLineChar:
          sz++;
-      }
-
-      pfd->xMarg = saveMarg;
-
-      if( 0 < len )
-      {
          _EmitFancyText( pfd, szTemp, len );
+ResetLine:
          pfd->sMax.cy += pfd->sLine.cy;
-         pfd->sMax.cx  = max( pfd->sMax.cx, pfd->p.x + pfd->xMarg );
+         pfd->sMax.cx  = max( pfd->sMax.cx, pfd->p.x );
          pfd->p.x      = pfd->xMarg;
          pfd->p.y     += pfd->sLine.cy;
          pfd->sLine.cx = 0;
          pfd->sLine.cy = 0;
-      }
-      else if( xMarg < pfd->p.x )
-      {  // There was a 'lingering line' with no newline at the end, so account for it
-         pfd->p.y    += pfd->sLine.cy;
-         pfd->sMax.cx = max( pfd->sMax.cx, pfd->p.x + pfd->xMarg );
-         pfd->sMax.cy = max( pfd->sMax.cy, pfd->p.y );
-      }
+         cp = szTemp;
+         len = 0;
+         continue;
 
-      pfd->sMax.cx += pfd->xMarg;
-      pfd->sMax.cy += pfd->yMarg;
-
-      if( NULL != ps )
-      {
-         ps->cx = pfd->sMax.cx;
-         ps->cy = pfd->sMax.cy;
+      case '\t' : // Advance the output location to the next tab stop for this font
+TabChar:
+         sz++;
+         _EmitFancyText( pfd, szTemp, len );
+         cp = szTemp;
+         len = 0;
+         for( t = 0; t < pfd->f[pfd->iFont].ctab; t++ )
+         {
+            tab = pfd->xMarg + pfd->f[pfd->iFont].tab[t];
+            if( pfd->p.x < tab )
+            {
+               pfd->p.x = tab;
+               break;
+            }
+         }
+         pfd->sMax.cx = max( pfd->sMax.cx, pfd->p.x );
+         continue;
       }
-      pfd->bTipReady = TRUE;
+CopyChar:
+      len += 1;
+      *cp = *sz;
+      cp++;
+      sz++;
    }
+
+   pfd->xMarg = saveMarg;
+
+   if( 0 < len )
+   {
+      _EmitFancyText( pfd, szTemp, len );
+      pfd->sMax.cy += pfd->sLine.cy;
+      pfd->sMax.cx  = max( pfd->sMax.cx, pfd->p.x + pfd->xMarg );
+      pfd->p.x      = pfd->xMarg;
+      pfd->p.y     += pfd->sLine.cy;
+      pfd->sLine.cx = 0;
+      pfd->sLine.cy = 0;
+   }
+   else if( xMarg < pfd->p.x )
+   {  // There was a 'lingering line' with no newline at the end, so account for it
+      pfd->p.y    += pfd->sLine.cy;
+      pfd->sMax.cx = max( pfd->sMax.cx, pfd->p.x + pfd->xMarg );
+      pfd->sMax.cy = max( pfd->sMax.cy, pfd->p.y );
+   }
+
+   pfd->sMax.cx += pfd->xMarg;
+   pfd->sMax.cy += pfd->yMarg;
+
+   if( NULL != ps )
+   {
+      ps->cx = pfd->sMax.cx;
+      ps->cy = pfd->sMax.cy;
+   }
+   pfd->bTipReady = TRUE;
    return ('\0' == *sz ? NO_ERROR : ERROR_INVALID_DATA);
 }
 

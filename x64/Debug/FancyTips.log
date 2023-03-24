@@ -2,5 +2,5 @@
   fancyTips.c
   multimon.c
   Generating Code...
-     Creating library D:\code\FancyTips\FancyTips\x64\Debug\FancyTips.lib and object D:\code\FancyTips\FancyTips\x64\Debug\FancyTips.exp
-  FancyTips.vcxproj -> D:\code\FancyTips\FancyTips\x64\Debug\FancyTips.dll
+     Creating library D:\code\FancyTips\FancyTips\x64\Debug\FancyTipsD.lib and object D:\code\FancyTips\FancyTips\x64\Debug\FancyTipsD.exp
+  FancyTips.vcxproj -> D:\code\FancyTips\FancyTips\x64\Debug\FancyTipsD.dll
