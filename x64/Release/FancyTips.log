@@ -4,6 +4,6 @@
      Creating library D:\code\FancyTips\FancyTips\x64\Release\FancyTips.lib and object D:\code\FancyTips\FancyTips\x64\Release\FancyTips.exp
   Generating code
   Previous IPDB not found, fall back to full compilation.
-  All 38 functions were compiled because no usable IPDB/IOBJ from previous compilation was found.
+  All 44 functions were compiled because no usable IPDB/IOBJ from previous compilation was found.
   Finished generating code
   FancyTips.vcxproj -> D:\code\FancyTips\FancyTips\x64\Release\FancyTips.dll

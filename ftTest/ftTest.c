@@ -269,15 +269,15 @@ static BOOL test_OnCreate( HWND hwnd, LPCREATESTRUCT lpCreateStruct )
    ft_AddFancyTipFont( g.hTip, "Title", &lf );
 
    lf.lfHeight = -MulDiv( 20, sLogPix.cy, 72 );
-   lf.lfWeight = FW_NORMAL;
+   lf.lfWeight = FW_SEMIBOLD;
    strcpy_s( lf.lfFaceName, sizeof(lf.lfFaceName), "Courier New" );
    ft_AddFancyTipFont( g.hTip, "Value", &lf );
 
    ft_SetFancyTipMargin( g.hTip, 12, 12 );
    sprintf_s( g.szTipText, sizeof(g.szTipText),
-              "<title>This line uses the 'title' font</ff>\n"
-              "<a:right>Here's the 'body' font</a>\n"
-              "<r@:2/5>A Value = </r@><value><fg:#fff><bg:#00A> 1.23E+02 </bg></fg></value>" );
+              "<title>This line uses the 'Title' font</ff>\n"
+              "<a:right>Here's the '<fg:#0B0>Body</fg>' font</a>\n"
+              "<r@:2/5>A Value = </r@><value><fg:#fff><bg:#009> 1.23E+02 </bg></fg></value>" );
    ft_SetFancyTipText( g.hTip, g.szTipText, NULL, ftiInformation );
    SetTimer( hwnd, fttTimerId, fttTimerRate, NULL );
    return TRUE;
