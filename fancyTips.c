@@ -926,16 +926,21 @@ static int _GetFancyCtrlType( FancyData *pfd, FancyControl *pfc, char **sz )
 static void _FancyTextOut( HDC hdc, int x, int y, BYTE byCharSet, UINT uOpts,
                            LPRECT pr, char *str, int len, INT *lpDx )
 {
+   RECT  r = *pr;
+
+   r.top -= 1;
+   y     += 1;
+
    if( OEM_CHARSET == byCharSet )
    {  // Use ASCII text emitter
-      ExtTextOutA( hdc, x, y, uOpts, pr, str, len, lpDx );
+      ExtTextOutA( hdc, x, y, uOpts, &r, str, len, lpDx );
    }
    else
    {  // Use WIDE text emitter
       WCHAR wsz[1024];
 
       OemToCharBuffW( str, wsz, len );
-      ExtTextOutW( hdc, x, y, uOpts, pr, wsz, len, lpDx );
+      ExtTextOutW( hdc, x, y, uOpts, &r, wsz, len, lpDx );
    }
    return;
 }
@@ -1026,11 +1031,12 @@ static void _EmitFancySegment( FancyData *pfd, int s )
       SetTextAlign( pfd->hdc, TA_LEFT|TA_BOTTOM );//pfd->seg[s].align | TA_BOTTOM );
       SetTextColor( pfd->hdc, pfd->seg[s].crFg );
       SetBkColor(   pfd->hdc, pfd->seg[s].crBg );
+      SetBkMode(    pfd->hdc, OPAQUE );
       if( pfd->seg[s].pff && pfd->seg[s].pff->hf )
       {
          hf = SelectObject( pfd->hdc, pfd->seg[s].pff->hf );
          _FancyTextOut( pfd->hdc, pfd->seg[s].pAnchor.x, pfd->seg[s].pAnchor.y,
-                        pfd->seg[s].pff->tm.tmCharSet, 0, &pfd->seg[s].r,
+                        pfd->seg[s].pff->tm.tmCharSet, ETO_OPAQUE, &pfd->seg[s].r,
                         pfd->seg[s].sz, pfd->seg[s].len, NULL );
          SelectObject( pfd->hdc, hf );
       }
@@ -1842,7 +1848,7 @@ static int _AdjustIconSize( int origSize, int bump )
 
 // -------------------------------------------------------------------------
 
-static int _SetFancyTipText( HANDLE hTip, char *sz, SIZE *ps, void *pIcon )
+static int _SetFancyTipText( HANDLE hTip, char *sz, SIZE *ps, void *pIcon, BOOL bFirstPass )
 {
    HINSTANCE      hinst;
    FancyData     *pfd;
@@ -1981,9 +1987,16 @@ LoadIconResource:
    pfd->leftEdge = pfd->xMarg;
    pfd->iAtPrev  = pfd->leftEdge;  // Make sensible in case of foolishness
 
-   pfd->p.x      = pfd->xMarg; pfd->p.y      = pfd->yMarg;
-   pfd->sMax.cx  = pfd->xMarg; pfd->sMax.cy  = pfd->yMarg;
-   pfd->sLine.cx = 0;          pfd->sLine.cy = 0;
+   pfd->p.x      = pfd->xMarg;
+   pfd->p.y      = pfd->yMarg;
+   pfd->sLine.cx = 0;
+   pfd->sLine.cy = 0;
+
+   if( bFirstPass )
+   {  // Do not restart the WIDTH calculation on the second pass!
+      pfd->sMax.cx = pfd->xMarg;
+   }
+   pfd->sMax.cy = pfd->yMarg;
 
    len = 0;
    cp = szTemp;
@@ -2108,7 +2121,6 @@ LoadIconResource:
                do // once
                {
                   _CollectTextBlock( pfd, szTemp, len, FALSE );
-                  //_MeasureFancyText( pfd, szTemp, len );
                   switch( pfc->eType )
                   {
                   case fcNoEscape:  pfd->bNoEscape = TRUE; continue;
@@ -2251,11 +2263,16 @@ FT_DECLSPEC int ft_SetFancyTipText( HANDLE hTip, char *sz, SIZE *ps, void *pIcon
    if( NULL != pfd )
    {
       ZeroMemory( &pfd->sMax, sizeof(pfd->sMax) );
-      rc = _SetFancyTipText( hTip, sz, ps, pIcon );
+      rc = _SetFancyTipText( hTip, sz, ps, pIcon, TRUE );
       if( NO_ERROR == rc )
-      {  // Make a second pass now that we know
-         // the max width to use for alignment
-         rc = _SetFancyTipText( hTip, sz, ps, pIcon );
+      {
+         rc = _SetFancyTipText( hTip, sz, ps, pIcon, FALSE );
+      }
+      else
+      {
+         char szerr[256];
+         dbg_printf( "FancyTips:  sftt returned code %d  [%s]\n",
+                     rc, _GetSystemErrorText(szerr,sizeof(szerr),rc) );
       }
    }
    return rc;

@@ -139,6 +139,8 @@ static LPSTR _GetSystemErrorText( LPSTR lpMsgBuf, size_t sMsgBufLen, DWORD dwErr
 #define MaxFancyName       32
 #define MaxFancyTabs       32
 #define MaxFancyControls   32
+#define FancySegmentChunk    32
+#define MaxFancySegLength  1024
 #define DefFancyTab         8
 #define DefFancyMargin      8
 // ------------------------------------------------------------------------
@@ -156,7 +158,8 @@ typedef struct FancyFont_s
 
 typedef enum FancyControl_e
 {
-   fcUnknown,
+   fcNone,
+   fcUnknown = fcNone,
 
    fcFgColor,
    fcBgColor,
@@ -173,21 +176,41 @@ typedef enum FancyControl_e
    fcEnd = 0x08000
 } FancyCtrlType;
 
-typedef enum FancyAlign_e
-{
-   faNone,
-   faLeft,
-   faCenter,
-   faRight,
-   faDecimal,  // possible future enhancement
-} FancyAlign;
-
 typedef struct FancyControl_s
 {
    FancyCtrlType  eType;   // Control type
    DWORD          val;     // New control value
    DWORD          prev;    // Previous value, restored when this control is closed
 } FancyControl;
+
+// Special values for iAt positions
+#define ffAtMask    0x0000FFFF
+#define ffAtPrevPos 0x0000FFFF
+#define ffAtCenter  0x0000FFFE
+#define IsAtPrevPos(iAt)  (ffAtPrevPos==((iAt)&ffAtMask))
+#define IsAtCenter(iAt)   (ffAtCenter==((iAt)&ffAtMask))
+#define IsAtFraction(iAt) (0!=((iAt)&0x00008000))
+#define MakeAtFraction(denom,numer) ((WORD)(0x00008000|MAKEWORD((numer),(denom))))
+#define GetAtNumer(iAt) (HIBYTE((iAt)&0x7FFF))
+#define GetAtDenom(iAt) (LOBYTE((iAt)&0x7FFF))
+
+typedef struct FancyLineSegment_s
+{
+   UINT           align;
+   int            iAlign;
+   FancyCtrlType  eAt;
+   int            iAt;
+   BOOL           bInPosTag;
+   FancyFont     *pff;
+   POINT          pAnchor;
+   RECT           r;
+   SIZE           s;
+   COLORREF       crFg;
+   COLORREF       crBg;
+   char           sz[MaxFancySegLength];
+   int            len;
+   BOOL           bEndOfLine;
+} FancyLineSegment;
 
 typedef struct FancyData_s
 {
@@ -208,6 +231,7 @@ typedef struct FancyData_s
    SIZE           sIcon;   // Icon size to use for custom icons
    FancyFont      f[MaxFancyFonts];
    int            cf;      // Number of fonts that have been registered
+   int               leftEdge;
    int            xMarg;
    int            yMarg;
    COLORREF       crDefFg; // Default foreground
@@ -215,16 +239,20 @@ typedef struct FancyData_s
    COLORREF       crFg;    // Current foreground
    COLORREF       crBg;    // Current background
    BOOL           bNoEscape;  // TRUE when escape character processing is disabled
+   BOOL              bInPosTag;  // TRUE when we are processing within a position tag
    int            iAlign;  // Current text alignment
    int            iFont;   // Currently selected font
    int            iAt;     // Current fancy alignment position
    int            iAtPrev; // Previous fancy alignment position
-   FancyAlign     eAt;     // Current fancy alignment
+   FancyCtrlType     eAt;     // Current fancy alignment
    POINT          p;       // Current location where text emission begins
    SIZE           sLine;   // Current height and width of the text
    SIZE           sMax;    // Total height and width of the text
    FancyControl   fc[MaxFancyControls];
    int            cfc;     // Fancy control 'stack'
+   FancyLineSegment *seg;
+   int               cSeg;
+   int               maxSegments;
 } FancyData;
 
 #define IsEndSymbol( sym )((0==((sym)&fcEnd))?FALSE:TRUE)
@@ -755,28 +783,33 @@ static int _GetAtValue( FancyCtrlType eType, FancyData *pfd, char *szVal )
 
    if( '^' == *szVal )
    {  // @ center
-      val = pfd->xMarg + ((pfd->sMax.cx - pfd->xMarg) / 2);
+      //val = pfd->xMarg + ((pfd->sMax.cx - pfd->xMarg) / 2);
+      val = ffAtCenter;
    }
    else if( '*' == *szVal )
    {  // most recently generated location
-      val = pfd->iAtPrev;
+      //val = pfd->iAtPrev;
+      val = ffAtPrevPos;
    }
    else if( strchr( szVal, '/' ) )
    {  // @ fractional part of current width
-      denom = strtol( szVal, &ep, 10 );
+      numer = strtol( szVal, &ep, 10 );
       if( ep && ('/' == *ep) )
       {
-         numer = strtol( ep+1, NULL, 10 ) ;
-         val = pfd->xMarg + MulDiv( pfd->sMax.cx - pfd->xMarg, denom, numer );
+         denom = strtol( ep+1, NULL, 10 ) ;
+         //val = pfd->xMarg + MulDiv( pfd->sMax.cx - pfd->xMarg, denom, numer );
+         val = (int)MakeAtFraction( numer, denom );
       }
       else
       {  // Missing numerator means we'll center by default
-         val = pfd->xMarg + ((pfd->sMax.cx - pfd->xMarg) / 2);
+         //val = pfd->xMarg + ((pfd->sMax.cx - pfd->xMarg) / 2);
+         val = ffAtCenter;
       }
    }
    else
    {  // @ specific column
-      val = strtol( szVal, NULL, 10 ) * pfd->f[pfd->iFont].tm.tmAveCharWidth;
+      //val = strtol( szVal, NULL, 10 ) * pfd->f[pfd->iFont].tm.tmAveCharWidth;
+      val = strtol( szVal, NULL, 10 );
    }
    pfd->iAtPrev = val;
    return val;
@@ -893,144 +926,286 @@ static int _GetFancyCtrlType( FancyData *pfd, FancyControl *pfc, char **sz )
 static void _FancyTextOut( HDC hdc, int x, int y, BYTE byCharSet, UINT uOpts,
                            LPRECT pr, char *str, int len, INT *lpDx )
 {
+   RECT  r = *pr;
+
+   r.top -= 1;
+   y     += 1;
+
    if( OEM_CHARSET == byCharSet )
    {  // Use ASCII text emitter
-      ExtTextOutA( hdc, x, y, uOpts, pr, str, len, lpDx );
+      ExtTextOutA( hdc, x, y, uOpts, &r, str, len, lpDx );
    }
    else
    {  // Use WIDE text emitter
       WCHAR wsz[1024];
 
       OemToCharBuffW( str, wsz, len );
-      ExtTextOutW( hdc, x, y, uOpts, pr, wsz, len, lpDx );
+      ExtTextOutW( hdc, x, y, uOpts, &r, wsz, len, lpDx );
    }
    return;
 }
 
 // -------------------------------------------------------------------------
 
-static void _EmitFancyText( FancyData *pfd, char *sz, int len )
+static void _NextFancySegment( FancyData *pfd )
 {
-   SIZE        s;
-   RECT        r;
-   POINT       pAnchor;
-   HFONT       hf;
-   FancyFont  *pff;
+   pfd->cSeg += 1;
+   if( pfd->cSeg == pfd->maxSegments )
+   {
+      pfd->maxSegments += FancySegmentChunk;
+      pfd->seg = (FancyLineSegment *)realloc( pfd->seg, pfd->maxSegments * sizeof(FancyLineSegment) );
+   }
+   return;
+}
+
+// -------------------------------------------------------------------------
+
+static void _CollectTextBlock( FancyData *pfd, char *sz, int len, BOOL bEndOfLine )
+{
    char       *cp;
    int         dot;
 
-   if( len <= 0 )
-   {  // nothing to emit (this happens when there's no text between control symbols)
+   if( 0 < len )
+   {
+      pfd->seg[pfd->cSeg].align      = (fcNone == pfd->seg[pfd->cSeg].eAt) ? pfd->seg[pfd->cSeg].iAlign : TA_LEFT;
+      pfd->seg[pfd->cSeg].iAlign     = pfd->iAlign;
+      pfd->seg[pfd->cSeg].iAt        = pfd->iAt;
+      pfd->seg[pfd->cSeg].bInPosTag  = pfd->bInPosTag;
+      pfd->seg[pfd->cSeg].pff        = &pfd->f[pfd->iFont];
+      pfd->seg[pfd->cSeg].crFg       = pfd->crFg;
+      pfd->seg[pfd->cSeg].crBg       = pfd->crBg;
+      pfd->seg[pfd->cSeg].bEndOfLine = bEndOfLine;
+
+      if( pfd->bInPosTag && (fcNone == pfd->eAt) )
+      {
+         pfd->seg[pfd->cSeg].eAt     = pfd->seg[pfd->cSeg-1].eAt;
+      }
+      else
+      {
+         pfd->seg[pfd->cSeg].eAt     = pfd->eAt;
+      }
+
+      if( fcDecimalAt == pfd->eAt )
+      {  // Collect as two parts
+         cp = strchr( sz, '.' );
+         if( cp )
+         {
+            dot = (int)(cp - sz);
+            pfd->seg[pfd->cSeg].align      = TA_LEFT;
+            pfd->seg[pfd->cSeg].len        = dot;
+            pfd->seg[pfd->cSeg].eAt        = fcRightAt;
+            strncpy_s( pfd->seg[pfd->cSeg].sz, MaxFancySegLength, sz, pfd->seg[pfd->cSeg].len );
+            pfd->seg[pfd->cSeg].bEndOfLine = FALSE;
+            _NextFancySegment( pfd );
+
+            pfd->seg[pfd->cSeg] = pfd->seg[pfd->cSeg-1];
+            pfd->seg[pfd->cSeg].eAt        = fcLeftAt;
+            pfd->seg[pfd->cSeg].iAt        = ffAtPrevPos;
+            pfd->seg[pfd->cSeg].bEndOfLine = bEndOfLine;
+            len -= dot;
+            sz   = cp;
+         }
+         // else No decimal, leave this block alone
+      }
+
+      pfd->seg[pfd->cSeg].len = len;
+      strncpy_s( pfd->seg[pfd->cSeg].sz, MaxFancySegLength, sz, len );
+      _NextFancySegment( pfd );
+   }
+   else if( bEndOfLine && (0 < pfd->cSeg) )
+   {  // There was no text when the end of line was detected,
+      // so set the EOL flag in the last text block built.
+      pfd->seg[pfd->cSeg-1].bEndOfLine = bEndOfLine;
+   }
+   return;
+}
+
+// -------------------------------------------------------------------------
+
+static void _EmitFancySegment( FancyData *pfd, int s )
+{
+   HFONT    hf = NULL;
+
+   if( (s <= pfd->cSeg) && (0 < pfd->seg[s].len) )
+   {
+      SetTextAlign( pfd->hdc, TA_LEFT|TA_BOTTOM );//pfd->seg[s].align | TA_BOTTOM );
+      SetTextColor( pfd->hdc, pfd->seg[s].crFg );
+      SetBkColor(   pfd->hdc, pfd->seg[s].crBg );
+      SetBkMode(    pfd->hdc, OPAQUE );
+      if( pfd->seg[s].pff && pfd->seg[s].pff->hf )
+      {
+         hf = SelectObject( pfd->hdc, pfd->seg[s].pff->hf );
+         _FancyTextOut( pfd->hdc, pfd->seg[s].pAnchor.x, pfd->seg[s].pAnchor.y,
+                        pfd->seg[s].pff->tm.tmCharSet, ETO_OPAQUE, &pfd->seg[s].r,
+                        pfd->seg[s].sz, pfd->seg[s].len, NULL );
+         SelectObject( pfd->hdc, hf );
+      }
+   }
+   return;
+}
+
+// -------------------------------------------------------------------------
+
+static void _RenderBlock( FancyData *pfd, int b, int rowHeight )
+{
+   pfd->seg[b].r.left    = pfd->p.x;
+   pfd->seg[b].r.top     = pfd->p.y;
+   pfd->seg[b].r.right   = pfd->p.x + pfd->seg[b].s.cx;
+   pfd->seg[b].r.bottom  = pfd->p.y + rowHeight;
+   pfd->seg[b].pAnchor.x = pfd->p.x;
+   pfd->seg[b].pAnchor.y = pfd->p.y + rowHeight;
+   _EmitFancySegment( pfd, b );
+   pfd->p.x += pfd->seg[b].s.cx;
+   pfd->sMax.cx = max( pfd->sMax.cx, pfd->p.x );
       return;
    }
 
-   pff = &pfd->f[pfd->iFont];
+// -------------------------------------------------------------------------
 
-   // First, prepare the DC
-   SetTextAlign( pfd->hdc, (faNone == pfd->eAt) ? pfd->iAlign : TA_LEFT );
-   SetTextColor( pfd->hdc, pfd->crFg );
-   SetBkColor(   pfd->hdc, pfd->crBg );
-   hf = SelectObject( pfd->hdc, pff->hf );
+static void _EmitLineBlockSet( FancyData *pfd, int fb, int lb, int rowHeight )
+{
+   int            sb;
+   int            b;
+   int            end = 0;
+   int            width;
+   int            denom;
+   int            numer;
+   int            right;
+   FancyCtrlType  eAt;
 
-   // Second, measure
-   GetTextExtentPoint32( pfd->hdc, sz, len, &s );
-   s.cy += pfd->f[pfd->iFont].tm.tmExternalLeading +
-           pfd->f[pfd->iFont].tm.tmInternalLeading;
-   pfd->sLine.cy = max( s.cy, pfd->sLine.cy );
-
-   r.top    = pfd->p.y;
-   r.bottom = r.top  + s.cy;
-
-   switch( pfd->eAt )
+   for( sb = fb; sb <= lb; sb++ )
    {
-   default:
-   case faNone:
-      //r.left  = pfd->p.x;
-      //r.right = max( pfd->sMax.cx - pfd->xMarg, r.left + s.cx );
-      switch( pfd->iAlign )
+      if( pfd->seg[sb].bInPosTag )
       {
-      default:
+         // Find the far end of the position block and compute the total length
+         for( b = sb, width = 0, eAt = pfd->seg[sb].eAt;
+              (b <= lb) && (eAt == pfd->seg[b].eAt);
+              b++ )
+         {
+            width += pfd->seg[b].s.cx;
+            end    = b;
+         }
+
+         // Now, figure out where this set of position-aligned blocks begins
+         right = max( pfd->sMax.cx, pfd->p.x + width );
+         switch( pfd->seg[sb].eAt )
+   {
+         case fcAlign:
+            switch( pfd->seg[sb].iAlign )
+      {
       case TA_LEFT:
          pfd->iAt = pfd->p.x;
-         goto LeftAt;
+               break;
 
       case TA_CENTER:
-         pfd->iAt = (pfd->xMarg + max( pfd->sMax.cx, pfd->p.x + s.cx )) / 2;
-         SetTextAlign( pfd->hdc, TA_LEFT );
-         goto CenterAt;
+               pfd->iAt = ((pfd->leftEdge + right) / 2) - (width / 2);
+               break;
 
       case TA_RIGHT:
-         pfd->iAt = max( pfd->sMax.cx, pfd->p.x + s.cx );
-         SetTextAlign( pfd->hdc, TA_LEFT );
-         goto RightAt;
+               pfd->iAt = right - width;
+               break;
+            }
+            break;
 
+         case fcLeftAt:
+         case fcCenterAt:
+         case fcRightAt:
+         case fcDecimalAt:
+            if( IsAtCenter( pfd->seg[sb].iAt ) )
+            {
+               pfd->iAt = (pfd->leftEdge + right) / 2;
+            }
+            else if( IsAtPrevPos( pfd->seg[sb].iAt ) )
+            {
+               pfd->iAt = pfd->iAtPrev;
+            }
+            else if( IsAtFraction( pfd->seg[sb].iAt ) )
+            {
+               denom = GetAtDenom(pfd->seg[sb].iAt);
+               numer = GetAtNumer(pfd->seg[sb].iAt);
+               pfd->iAt = pfd->leftEdge + MulDiv( right - pfd->leftEdge, numer, denom );
+            }
+            else  // AtColumn
+            {
+               pfd->iAt = pfd->leftEdge + pfd->seg[sb].iAt * pfd->seg[sb].pff->tm.tmAveCharWidth;
+            }
+            break;
       }
+
+         switch( pfd->seg[sb].eAt )
+         {
+         default:
+            break;
+
+         case fcAlign   :
+         case fcLeftAt  :  // No adjustment to @ point
+            pfd->p.x = pfd->iAt;
+            break;
+
+         case fcCenterAt:  // Start 1/2 the total width before the @ point
+            pfd->p.x = pfd->iAt - (width / 2);
       break;
 
-   case faLeft:
-LeftAt:
-      r.left    = pfd->iAt;
-      r.right   = max( pfd->sMax.cx - pfd->xMarg, r.left + s.cx );
-      pAnchor.x = r.left;
-      pfd->p.x = pAnchor.x + s.cx;
+         case fcRightAt :  // Start total width before the @ point
+            pfd->p.x = pfd->iAt - width;
       break;
+         }
+         pfd->iAtPrev = pfd->iAt;
 
-   case faCenter:
-CenterAt:
-      r.left    = pfd->iAt - (s.cx / 2);
-      r.right   = r.left + s.cx;
-      pAnchor.x = r.left;
-      pfd->p.x = r.right;
-      break;
 
-   case faRight:
-RightAt:
-      r.left    = pfd->iAt - s.cx;
-      r.right   = r.left + s.cx;
-      pAnchor.x = r.left;
-      pfd->p.x = pAnchor.x + s.cx;
-      break;
-
-   case faDecimal:   // Find the decimal and emit the first half right-aligned to the @ location
-      cp = strchr( sz, '.' );
-      if( cp )
+         // Time to actually render each block
+         for( b = sb; b <= end; b++ )
       {
-         SetTextAlign( pfd->hdc, TA_LEFT );
-         dot = (int)(cp - sz);
-         GetTextExtentPoint32( pfd->hdc, sz, dot, &s );
-         s.cy += pfd->f[pfd->iFont].tm.tmExternalLeading +
-                 pfd->f[pfd->iFont].tm.tmInternalLeading;
-         r.top     = pfd->p.y;
-         r.bottom  = r.top + s.cy;
-         r.left    = pfd->iAt - s.cx;
-         r.right   = r.left + s.cx;
-         pAnchor.x = r.left;
-         pAnchor.y = pfd->p.y;
+            _RenderBlock( pfd, b, rowHeight );
+      }
+         sb = end;
+      }
+      else  // single block, compute its position and render it
+      {
+         _RenderBlock( pfd, sb, rowHeight );
+      }
+   }
+   pfd->sMax.cy += rowHeight;
+   return;
+}
 
-         _FancyTextOut( pfd->hdc, pAnchor.x, pAnchor.y, pff->tm.tmCharSet, 0, &r, sz, dot, NULL );
-         len      -= dot;
-         sz        = cp;
-         GetTextExtentPoint32( pfd->hdc, sz, len, &s );
-         r.left    = pfd->iAt;
-         r.right   = r.left + (max( pfd->sMax.cx - pfd->xMarg, r.left + s.cx ) - pfd->iAt);
-         pAnchor.x = r.left;
-      }
-      else
-      {  // No decimal, treat as <r@>
-         r.left    = pfd->iAt - s.cx;
-         r.right   = r.left + s.cx;
-         pAnchor.x = r.left;
-      }
-      pfd->p.x = pAnchor.x + s.cx;
+// -------------------------------------------------------------------------
+
+static void _RenderTipText( FancyData *pfd, SIZE *pTipSize )
+{
+   int   seg;  // Current segment of all tip text
+   int   sb;   // Current segment of current line's block
+   int   fb;   // First block of a line
+   int   lb;   // Last block of a line
+   int   rowHeight;
+   HFONT hf;
+
+   pfd->p.x = pfd->leftEdge;
+   pfd->p.y = pfd->yMarg;
+
+   for( seg = 0; seg < pfd->cSeg; seg++ )
+   {
+      // Compute the height & length of each text block on the line
+      rowHeight = 0;
+      for( fb = seg, sb = fb; seg < pfd->cSeg; sb++, seg++ )
+      {
+         hf = SelectFont( pfd->hdc, pfd->seg[sb].pff->hf );
+         GetTextExtentPoint32( pfd->hdc, pfd->seg[sb].sz, pfd->seg[sb].len, &pfd->seg[sb].s );
+         rowHeight = max( rowHeight, pfd->seg[sb].s.cy );
+         SelectFont( pfd->hdc, hf );
+         if( pfd->seg[seg].bEndOfLine )
+         {
       break;
    }
-   pAnchor.y = pfd->p.y;
+      }
+      lb = seg;
 
-   pfd->sLine.cx = max( pfd->sLine.cx, pfd->p.x );
+      _EmitLineBlockSet( pfd, fb, lb, rowHeight );
 
-   // Finally, emit to working screen buffer
-   _FancyTextOut( pfd->hdc, pAnchor.x, pAnchor.y, pff->tm.tmCharSet, 0, &r, sz, len, NULL );
-   SelectObject( pfd->hdc, hf );
+      // Prepare for the next line of output (if any)
+      pfd->p.x = pfd->leftEdge;
+      pfd->p.y += rowHeight;
+   }
    return;
 }
 
@@ -1315,6 +1490,9 @@ static BOOL ftt_OnCreate( HWND hwnd, LPCREATESTRUCT lpCreateStruct )
    SetWindowLongPtr( hwnd, GWLP_USERDATA, (LONG_PTR)pfd );
    pfd->hTip = hwnd;
 
+   pfd->maxSegments = FancySegmentChunk;
+   pfd->seg = (FancyLineSegment *)malloc( pfd->maxSegments * sizeof(FancyLineSegment) );
+
    hdc = GetDC( hwnd );
    {
       pfd->f[0].hf = GetCurrentObject( hdc, OBJ_FONT );
@@ -1345,6 +1523,10 @@ static BOOL ftt_OnCreate( HWND hwnd, LPCREATESTRUCT lpCreateStruct )
       pfd->rBuf.top    = 0;
       pfd->rBuf.right  = size.cx;
       pfd->rBuf.bottom = size.cy;
+
+      pfd->leftEdge    = pfd->xMarg;
+      pfd->p.x         = pfd->leftEdge;
+      pfd->p.y         = pfd->yMarg;
    }
    ReleaseDC( hwnd, hdc );
 
@@ -1372,6 +1554,7 @@ static void ftt_OnDestroy( HWND hwnd )
       {
          DeleteObject( pfd->f[x].hf );
       }
+      free( pfd->seg );
       free( pfd );
       SetWindowLongPtr( hwnd, GWLP_USERDATA, 0 );
    }
@@ -1515,7 +1698,7 @@ static LRESULT CALLBACK ftt_WindowProc( HWND hwnd, UINT uMsg, WPARAM wParam, LPA
 // -------------------------------------------------------------------------
 // -------------------------------------------------------------------------
 
-#define EviFancyTipClass   TEXT("FancyTip")
+#define FancyTipClass   TEXT("FancyTipSpv")
 
 FT_DECLSPEC HANDLE ft_CreateFancyTip( HINSTANCE hInst, HWND hOwner )
 {
@@ -1532,7 +1715,7 @@ FT_DECLSPEC HANDLE ft_CreateFancyTip( HINSTANCE hInst, HWND hOwner )
    wc.hIcon          = NULL;
    wc.hInstance      = hInst;
    wc.lpfnWndProc    = ftt_WindowProc;
-   wc.lpszClassName  = EviFancyTipClass;
+   wc.lpszClassName  = FancyTipClass;
    wc.lpszMenuName   = NULL;
    wc.style          = 0;//CS_DBLCLKS;
 
@@ -1551,7 +1734,7 @@ FT_DECLSPEC HANDLE ft_CreateFancyTip( HINSTANCE hInst, HWND hOwner )
 
    // Create the tooltip window
    pfd->hwnd = CreateWindowEx( WS_EX_NOACTIVATE,
-                               EviFancyTipClass,
+                               FancyTipClass,
                                NULL,
                                WS_POPUP,
                                CW_USEDEFAULT, CW_USEDEFAULT,
@@ -1665,25 +1848,26 @@ static int _AdjustIconSize( int origSize, int bump )
 
 // -------------------------------------------------------------------------
 
-FT_DECLSPEC int ft_SetFancyTipText( HANDLE hTip, char *sz, SIZE *ps, void *pIcon )
+static int _SetFancyTipText( HANDLE hTip, char *sz, SIZE *ps, void *pIcon, BOOL bFirstPass )
 {
    HINSTANCE      hinst;
    FancyData     *pfd;
    FancyControl  *pfc;
    FancyControl  *pfcPrev;
-   int            len = 0;
+   int            len;
    int            t;
    int            rc;
    int            xMarg;
    int            saveMarg;
    int            tab;
    char          *cp;
-   char           szTemp[1024];
+   char           szTemp[MaxFancySegLength];
    char           szCode[8];
    BOOL           bIcon;
    HANDLE         hIcon = NULL;
    SIZE           sIcon = {0};
    BOOL           bNeedSize = TRUE;
+   BOOL           bPosTag;
 
    pfd = (FancyData *)hTip;
    if( (NULL == pfd) || !IsWindow(pfd->hTip) || (NULL == sz) )
@@ -1697,7 +1881,10 @@ FT_DECLSPEC int ft_SetFancyTipText( HANDLE hTip, char *sz, SIZE *ps, void *pIcon
    sIcon.cy = pfd->sIcon.cy;
 
    pfd->bTipReady = FALSE;
-   pfd->iAtPrev   = pfd->xMarg;  // Make sensible in case of foolishness
+   pfd->bInPosTag = FALSE;
+   pfd->cSeg      = 0 ;
+
+   ZeroMemory( pfd->seg, sizeof(pfd->seg) );
 
    switch( (DWORD_PTR)pIcon )
    {
@@ -1719,7 +1906,12 @@ FT_DECLSPEC int ft_SetFancyTipText( HANDLE hTip, char *sz, SIZE *ps, void *pIcon
    case IDI_SHIELD     :
       hinst = NULL;
 LoadIconResource:
-      hIcon = LoadIcon( hinst, MAKEINTRESOURCE((DWORD_PTR)pIcon) );
+      hIcon = (HICON)LoadImage( hinst,
+                                MAKEINTRESOURCE((DWORD_PTR)pIcon),
+                                IMAGE_ICON,
+                                pfd->sIcon.cx,
+                                pfd->sIcon.cy,
+                                LR_SHARED );
       bIcon = (NULL != hIcon);
       if( bNeedSize )
       {
@@ -1732,11 +1924,21 @@ LoadIconResource:
       {
          if( 32000 < (DWORD_PTR)pIcon )
          {  // This is likely a system resource request
-            hIcon = LoadIcon( NULL, MAKEINTRESOURCE((DWORD_PTR)pIcon) );
+            hIcon = (HICON)LoadImage( NULL,
+                                      MAKEINTRESOURCE((DWORD_PTR)pIcon),
+                                      IMAGE_ICON,
+                                      pfd->sIcon.cx,
+                                      pfd->sIcon.cy,
+                                      LR_SHARED );
          }
          else
          {
-            hIcon = LoadIcon( hinst, MAKEINTRESOURCE((DWORD_PTR)pIcon) );
+            hIcon = (HICON)LoadImage( hinst,
+                                      MAKEINTRESOURCE((DWORD_PTR)pIcon),
+                                      IMAGE_ICON,
+                                      pfd->sIcon.cx,
+                                      pfd->sIcon.cy,
+                                      LR_SHARED );
          }
          bIcon = (NULL != hIcon);
          if( bNeedSize )
@@ -1782,11 +1984,21 @@ LoadIconResource:
    }
    saveMarg = pfd->xMarg;
    pfd->xMarg = xMarg;
+   pfd->leftEdge = pfd->xMarg;
+   pfd->iAtPrev  = pfd->leftEdge;  // Make sensible in case of foolishness
 
-   pfd->p.x      = pfd->xMarg; pfd->p.y      = pfd->yMarg;
-   pfd->sMax.cx  = pfd->xMarg; pfd->sMax.cy  = pfd->yMarg;
-   pfd->sLine.cx = 0;          pfd->sLine.cy = 0;
+   pfd->p.x      = pfd->xMarg;
+   pfd->p.y      = pfd->yMarg;
+   pfd->sLine.cx = 0;
+   pfd->sLine.cy = 0;
 
+   if( bFirstPass )
+   {  // Do not restart the WIDTH calculation on the second pass!
+      pfd->sMax.cx = pfd->xMarg;
+   }
+   pfd->sMax.cy = pfd->yMarg;
+
+   len = 0;
    cp = szTemp;
    while( *sz )
    {
@@ -1863,9 +2075,7 @@ LoadIconResource:
             {  // Attempt to pop the previous symbol value off the 'stack'
                if( 0 < pfd->cfc )
                {
-                  _EmitFancyText( pfd, szTemp, len );
-                  len = 0;
-                  cp = sz;
+                  _CollectTextBlock( pfd, szTemp, len, FALSE );
                   pfc->eType &= ~fcEnd;
                   pfcPrev = &pfd->fc[pfd->cfc-1];
                   if( pfc->eType == pfcPrev->eType )
@@ -1876,12 +2086,16 @@ LoadIconResource:
                      case fcFgColor:   pfd->crFg   = (COLORREF)pfcPrev->prev; break;
                      case fcBgColor:   pfd->crBg   = (COLORREF)pfcPrev->prev; break;
                      case fcFont:      pfd->iFont  = (int)pfcPrev->prev;      break;
-                     case fcAlign:     pfd->iAlign = (int)pfcPrev->prev;      break;
+                     case fcAlign:     pfd->iAlign    = (int)pfcPrev->prev;
+                                       pfd->bInPosTag = FALSE;
+                                       break;
                      case fcLeftAt:
                      case fcCenterAt:
                      case fcDecimalAt:
-                     case fcRightAt:   pfd->eAt = (FancyAlign)HIWORD(pfcPrev->prev);
-                        pfd->iAt = (int)LOWORD(pfcPrev->prev); break;
+                     case fcRightAt:   pfd->bInPosTag = FALSE;
+                                       pfd->eAt       = (FancyCtrlType)HIWORD(pfcPrev->prev);
+                                       pfd->iAt       = LOWORD(pfcPrev->prev);
+                                       break;
                      }
                      pfd->cfc -= 1;
                   }
@@ -1899,54 +2113,55 @@ LoadIconResource:
                      }
                   }
                }
-               else
-               {  // Error!  No matching 'start' for ANY symbol!
-                  dbg_printf( "FancyTips:  No matching 'start' for ANY symbol!\n" );
-               }
+               // else  No matching 'start' for ANY symbol?
             }
             else
             {
+               bPosTag = FALSE;
                do // once
                {
-                  _EmitFancyText( pfd, szTemp, len );
-                  len = 0;
+                  _CollectTextBlock( pfd, szTemp, len, FALSE );
+                  //_MeasureFancyText( pfd, szTemp, len );
                   switch( pfc->eType )
                   {
                   case fcNoEscape:  pfd->bNoEscape = TRUE; continue;
                   case fcFgColor:   pfc->prev = pfd->crFg  ; pfd->crFg   = (COLORREF)pfc->val;  break;
                   case fcBgColor:   pfc->prev = pfd->crBg  ; pfd->crBg   = (COLORREF)pfc->val;  break;
                   case fcFont:      pfc->prev = pfd->iFont ; pfd->iFont  = (int)pfc->val;       break;
-                  case fcAlign:     pfc->prev = pfd->iAlign; pfd->iAlign = (int)pfc->val;       break;
+                  case fcAlign:
+                     if( pfd->bInPosTag )
+                     {
+                        dbg_printf( "FancyTips:  Nesting position tags is not supported!\n" );
+                        return rc;
+                     }
+                     pfd->bInPosTag = TRUE;
+                     pfd->eAt       = pfc->eType;
+                     pfc->prev      = pfd->iAlign; pfd->iAlign = (int)pfc->val;
+                     break;
+
                   case fcLeftAt:
-                     pfc->prev = MAKEDWORD( pfd->iAt, pfd->eAt );
-                     pfd->eAt  = faLeft;
-                     pfd->iAt  = (int)pfc->val;
-                     //pfd->iAt  = pfd->xMarg + (int)pfc->val;// * pfd->f[pfd->iFont].tm.tmAveCharWidth;
-                     break;
-
                   case fcCenterAt:
-                     pfc->prev = MAKEDWORD( pfd->iAt, pfd->eAt );
-                     pfd->eAt  = faCenter;
-                     pfd->iAt  = (int)pfc->val;
-                     //pfd->iAt  = pfd->xMarg + (int)pfc->val;// * pfd->f[pfd->iFont].tm.tmAveCharWidth;
-                     break;
-
                   case fcRightAt:
-                     pfc->prev = MAKEDWORD( pfd->iAt, pfd->eAt );
-                     pfd->eAt  = faRight;
-                     pfd->iAt  = (int)pfc->val;
-                     //pfd->iAt  = pfd->xMarg + (int)pfc->val;// * pfd->f[pfd->iFont].tm.tmAveCharWidth;
-                     break;
-
                   case fcDecimalAt:
-                     pfc->prev = MAKEDWORD( pfd->iAt, pfd->eAt );
-                     pfd->eAt  = faDecimal;
-                     pfd->iAt  = (int)pfc->val;
-                     //pfd->iAt  = pfd->xMarg + (int)pfc->val;// * pfd->f[pfd->iFont].tm.tmAveCharWidth;
+                     if( pfd->bInPosTag )
+                     {
+                        dbg_printf( "FancyTips:  Nesting position tags is not supported!\n" );
+                        return rc;
+                     }
+                     bPosTag        = TRUE;
+                     pfd->bInPosTag = TRUE;
+                     pfc->prev      = MAKEDWORD( pfd->iAt, pfd->eAt );
+                     pfd->eAt       = pfc->eType;
+                     pfd->iAt       = (int)pfc->val;
                      break;
 
                   case fcColumn:
-                     pfd->p.x  = pfd->xMarg + (int)pfc->val * pfd->f[0].tm.tmAveCharWidth;
+                     if( pfd->bInPosTag )
+                     {
+                        dbg_printf( "FancyTips:  Nesting position tags is not supported!\n" );
+                        return rc;
+                     }
+                     pfd->iAt       = (int)pfc->val;
                      continue;
 
                   case fcBreak:
@@ -1955,6 +2170,7 @@ LoadIconResource:
                   pfd->cfc += 1;
                }while(FALSE);
             }
+            len = 0;
             cp = szTemp;
             continue;
          }
@@ -1967,14 +2183,8 @@ LoadIconResource:
       case '\n' : // End of line, time to emit what we have and start a new line
 NewLineChar:
          sz++;
-         _EmitFancyText( pfd, szTemp, len );
+         _CollectTextBlock( pfd, szTemp, len, TRUE );
 ResetLine:
-         pfd->sMax.cy += pfd->sLine.cy;
-         pfd->sMax.cx  = max( pfd->sMax.cx, pfd->p.x );
-         pfd->p.x      = pfd->xMarg;
-         pfd->p.y     += pfd->sLine.cy;
-         pfd->sLine.cx = 0;
-         pfd->sLine.cy = 0;
          cp = szTemp;
          len = 0;
          continue;
@@ -1982,7 +2192,7 @@ ResetLine:
       case '\t' : // Advance the output location to the next tab stop for this font
 TabChar:
          sz++;
-         _EmitFancyText( pfd, szTemp, len );
+         _CollectTextBlock( pfd, szTemp, len, FALSE );
          cp = szTemp;
          len = 0;
          for( t = 0; t < pfd->f[pfd->iFont].ctab; t++ )
@@ -2008,13 +2218,7 @@ CopyChar:
 
    if( 0 < len )
    {
-      _EmitFancyText( pfd, szTemp, len );
-      pfd->sMax.cy += pfd->sLine.cy;
-      pfd->sMax.cx  = max( pfd->sMax.cx, pfd->p.x + pfd->xMarg );
-      pfd->p.x      = pfd->xMarg;
-      pfd->p.y     += pfd->sLine.cy;
-      pfd->sLine.cx = 0;
-      pfd->sLine.cy = 0;
+      _CollectTextBlock( pfd, szTemp, len, TRUE );
    }
    else if( xMarg < pfd->p.x )
    {  // There was a 'lingering line' with no newline at the end, so account for it
@@ -2023,8 +2227,22 @@ CopyChar:
       pfd->sMax.cy = max( pfd->sMax.cy, pfd->p.y );
    }
 
+   if( pfd->cSeg <= 0 ) return ERROR_NOT_SUPPORTED;   // No data found to display in tool tip!
+
+   pfd->seg[pfd->cSeg-1].bEndOfLine = TRUE;  // The last block is ALWAYS the end of its line!
+
+   _RenderTipText( pfd, ps );
+
    pfd->sMax.cx += pfd->xMarg;
-   pfd->sMax.cy += pfd->yMarg;
+   pfd->sMax.cy += pfd->yMarg;// * 2;
+   pfd->cSeg     = 0;
+   ZeroMemory( pfd->seg, sizeof(pfd->seg) );
+
+   if( bIcon )
+   {  // In case there's only one line of text,
+      // make sure there's vertical space for the icon
+      pfd->sMax.cy = max( pfd->sMax.cy, pfd->yMarg + sIcon.cy + pfd->yMarg );
+   }
 
    if( NULL != ps )
    {
@@ -2033,6 +2251,32 @@ CopyChar:
    }
    pfd->bTipReady = TRUE;
    return ('\0' == *sz ? NO_ERROR : ERROR_INVALID_DATA);
+}
+
+// -------------------------------------------------------------------------
+
+FT_DECLSPEC int ft_SetFancyTipText( HANDLE hTip, char *sz, SIZE *ps, void *pIcon )
+{
+   FancyData  *pfd;
+   int         rc = ERROR_INVALID_PARAMETER;
+
+   pfd = (FancyData *)hTip;
+   if( NULL != pfd )
+   {
+      ZeroMemory( &pfd->sMax, sizeof(pfd->sMax) );
+      rc = _SetFancyTipText( hTip, sz, ps, pIcon, TRUE );
+      if( NO_ERROR == rc )
+      {
+         rc = _SetFancyTipText( hTip, sz, ps, pIcon, FALSE );
+      }
+      else
+      {
+         char szerr[256];
+         _dbg_printf( "FancyTips:  sftt returned code %d  [%s]\n",
+                      rc, GetSystemErrorText(szerr,sizeof(szerr),rc) );
+      }
+   }
+   return rc;
 }
 
 // -------------------------------------------------------------------------
